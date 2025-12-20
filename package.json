@@ -1,7 +1,7 @@
 {
   "name": "youtube-downloader-yt-dlp-nextjs-auto-cookies",
-  "version": "5.1.0",
-  "description": "Production-ready YouTube video downloader with FFprobe validation, auto-fallback formats, and corruption fix. Features auto-fetched cookies, server proxy downloads, responsive UI, admin dashboard, and SSE progress tracking.",
+  "version": "5.2.0",
+  "description": "Production-ready YouTube downloader with timeout fix, relaxed validation, auto-fallback formats. Features auto-fetched cookies, serverless-optimized (120s), server proxy downloads, responsive UI, admin dashboard, and SSE progress.",
   "private": true,
   "author": "YT Downloader Team",
   "license": "MIT",

@@ -90,7 +90,7 @@ export default function FormatSelector({ formats, onSelect, selectedFormat }: Fo
               <h4 className="text-sm font-semibold text-base-content/60 uppercase tracking-wide">
                 Recommended
               </h4>
-              <div className="tooltip tooltip-right" data-tip="Best Quality merges video+audio. May take longer; auto-fallback if issues detected.">
+              <div className="tooltip tooltip-right" data-tip="Best Quality may be slower & could timeout on serverless. Auto-fallback to 720p if issues occur.">
                 <FiInfo className="w-3.5 h-3.5 text-base-content/40 cursor-help" />
               </div>
             </div>
@@ -212,9 +212,9 @@ const FormatCard = forwardRef<HTMLDivElement, FormatCardProps>(
         <div className="flex-1 min-w-0">
           <div className="font-medium truncate text-sm sm:text-base flex items-center gap-1">
             {format.quality}
-            {/* Warning for Best Quality formats */}
+            {/* Warning for Best Quality formats - v5.2.0: Updated warning */}
             {(format.formatId.includes('+') || format.formatId.includes('best')) && format.hasVideo && (
-              <div className="tooltip tooltip-top" data-tip="May take longer; auto-fallback if corrupt">
+              <div className="tooltip tooltip-top" data-tip="May be slower; auto-fallback to 720p if timeout">
                 <FiAlertTriangle className="w-3 h-3 sm:w-3.5 sm:h-3.5 text-warning" />
               </div>
             )}
@@ -223,9 +223,9 @@ const FormatCard = forwardRef<HTMLDivElement, FormatCardProps>(
             <span className="badge badge-xs">{format.ext.toUpperCase()}</span>
             {format.vbr && <span>{formatBitrate(format.vbr)}</span>}
             {!format.vbr && format.abr && <span>{formatBitrate(format.abr)}</span>}
-            {/* Merge indicator */}
+            {/* Merge indicator - v5.2.0: Added slower warning */}
             {format.formatId.includes('+') && (
-              <span className="badge badge-xs badge-warning badge-outline">merge</span>
+              <span className="badge badge-xs badge-warning badge-outline">slower</span>
             )}
           </div>
         </div>

@@ -4,7 +4,7 @@
  * Shared store for tracking download progress across API routes
  * Used by download route to update and download-progress SSE to read
  * 
- * @version 5.1.0 - Added validation phase and corruption tracking
+ * @version 5.2.0 - Timeout fix update, relaxed validation
  */
 
 // Store for active download progress (in-memory)
@@ -19,8 +19,8 @@ export const downloadProgressStore = new Map<string, {
   completed: boolean;
   fileReady: boolean;
   filePath?: string;
-  // v5.1.0: Corruption tracking
-  isCorruption?: boolean;
+  // v5.2.0: Timeout/error tracking
+  isTimeout?: boolean;
   suggestion?: string;
   attempt?: number;
 }>();
@@ -40,7 +40,7 @@ export function updateProgress(
     completed: boolean;
     fileReady: boolean;
     filePath?: string;
-    isCorruption?: boolean;
+    isTimeout?: boolean;
     suggestion?: string;
     attempt?: number;
   }>

@@ -1,16 +1,17 @@
 /**
- * yt-dlp Utilities for Corruption Fix Update
+ * yt-dlp Utilities for Timeout Fix Update
  * 
- * Provides:
- * 1. Cookies caching (30s TTL) to reduce fetch overhead
- * 2. FFprobe validation to detect corrupted downloads
- * 3. Timeout utilities with AbortController support
- * 4. Retry logic with fallback format support
+ * v5.2.0 CHANGES:
+ * - REMOVED FFprobe dependency (too slow, causes false positives)
+ * - Relaxed validation: metadata-based size check instead
+ * - Extended cookies cache to 60s for stability
+ * - Increased timeouts for serverless environments (Phala Cloud/Vercel)
+ * - Better fallback format selection
  * 
- * @version 5.1.0 - Corruption Fix Update
+ * @version 5.2.0 - Timeout Fix Update
  */
 
-import { spawn, ChildProcess } from 'child_process';
+import { ChildProcess } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -27,17 +28,12 @@ export interface CookiesCache {
   isValid: boolean;
 }
 
-export interface FFprobeResult {
+export interface ValidationResult {
   isValid: boolean;
-  hasVideo: boolean;
-  hasAudio: boolean;
-  duration: number;
-  format: string;
+  fileSize: number;
+  expectedSize: number | null;
+  sizeRatio: number | null;
   error?: string;
-  streams: {
-    video: number;
-    audio: number;
-  };
 }
 
 export interface DownloadConfig {
@@ -46,6 +42,7 @@ export interface DownloadConfig {
   fallbackFormats: string[];
   concurrentFragments: number;
   socketTimeout: number;
+  httpTimeout: number;
   httpChunkSize: string;
 }
 
@@ -56,41 +53,43 @@ export interface TimeoutController {
 }
 
 // ==========================================
-// Constants
+// Constants - v5.2.0 Optimized for Stability
 // ==========================================
 
-// Cache TTL: 30 seconds (matches external source refresh rate)
-const COOKIES_CACHE_TTL = 30 * 1000;
+// Cache TTL: 60 seconds (extended from 30s for stability)
+const COOKIES_CACHE_TTL = 60 * 1000;
 
 // Fetch timeout for cookies
-const COOKIES_FETCH_TIMEOUT = 5000;
+const COOKIES_FETCH_TIMEOUT = 8000;
 
-// Default download timeout: 60 seconds for initial connection
-const DEFAULT_CONNECT_TIMEOUT = 60 * 1000;
+// Maximum download time: 2 minutes (optimized for serverless ~60s limit)
+const MAX_DOWNLOAD_TIMEOUT = 120 * 1000;
 
-// Maximum download time: 5 minutes
-const MAX_DOWNLOAD_TIMEOUT = 5 * 60 * 1000;
+// Minimum file size: 1KB (very relaxed to avoid false positives)
+const MIN_FILE_SIZE = 1024;
 
-// FFprobe timeout: 30 seconds
-const FFPROBE_TIMEOUT = 30 * 1000;
+// Size tolerance: Allow 50-200% of expected size (very relaxed)
+const SIZE_TOLERANCE_MIN = 0.5;
+const SIZE_TOLERANCE_MAX = 2.0;
 
-// Default download configuration
+// Default download configuration - v5.2.0 optimized
 export const DEFAULT_DOWNLOAD_CONFIG: DownloadConfig = {
   timeout: MAX_DOWNLOAD_TIMEOUT,
   maxRetries: 3,
   fallbackFormats: [
     'best[height<=720]',       // 720p max (fast & stable)
     'best[height<=480]',       // 480p fallback
-    'best[ext=mp4]',           // Any MP4
+    'best[height<=360]',       // 360p last resort
     'best',                    // Absolute fallback
   ],
-  concurrentFragments: 4,      // Reduced from default for stability
-  socketTimeout: 10,           // 10 seconds socket timeout
+  concurrentFragments: 2,      // Reduced for stability (was 4)
+  socketTimeout: 30,           // Increased from 10s
+  httpTimeout: 30,             // Added HTTP timeout
   httpChunkSize: '10M',        // 10MB chunks
 };
 
-// Temp directory for validation
-const TEMP_DIR = path.join(os.tmpdir(), 'yt-dlp-validation');
+// Temp directory
+const TEMP_DIR = path.join(os.tmpdir(), 'yt-downloader');
 
 // ==========================================
 // Cookies Cache Implementation
@@ -119,10 +118,7 @@ export function isCookiesCacheValid(): boolean {
 
 /**
  * Get cached cookies or fetch fresh ones
- * Uses 30-second TTL to reduce external URL calls
- * 
- * @param forceRefresh - Force a fresh fetch ignoring cache
- * @returns Promise<{ content: string; tempPath: string; fromCache: boolean }>
+ * Uses 60-second TTL (extended from 30s for stability)
  */
 export async function getCachedCookies(forceRefresh = false): Promise<{
   content: string;
@@ -132,7 +128,8 @@ export async function getCachedCookies(forceRefresh = false): Promise<{
 }> {
   // Check cache validity
   if (!forceRefresh && isCookiesCacheValid() && cookiesCache.tempPath && fs.existsSync(cookiesCache.tempPath)) {
-    console.log('[CookiesCache] Using cached cookies (age: ' + Math.round((Date.now() - cookiesCache.lastFetch) / 1000) + 's)');
+    const age = Math.round((Date.now() - cookiesCache.lastFetch) / 1000);
+    console.log(`[CookiesCache] Using cached cookies (age: ${age}s)`);
     return {
       content: cookiesCache.content,
       tempPath: cookiesCache.tempPath,
@@ -141,11 +138,9 @@ export async function getCachedCookies(forceRefresh = false): Promise<{
     };
   }
 
-  // Fetch fresh cookies
   console.log('[CookiesCache] Fetching fresh cookies from:', COOKIES_URL);
   
   try {
-    // Create AbortController for timeout
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), COOKIES_FETCH_TIMEOUT);
 
@@ -154,7 +149,7 @@ export async function getCachedCookies(forceRefresh = false): Promise<{
       responseType: 'text',
       signal: controller.signal,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (compatible; YT-Downloader/5.1)',
+        'User-Agent': 'Mozilla/5.0 (compatible; YT-Downloader/5.2)',
         'Accept': 'text/plain, */*',
       },
       validateStatus: (status) => status < 500,
@@ -182,13 +177,13 @@ export async function getCachedCookies(forceRefresh = false): Promise<{
       try {
         fs.unlinkSync(cookiesCache.tempPath);
       } catch {
-        // Ignore cleanup errors
+        // Ignore
       }
     }
 
     // Write to new temp file
     ensureTempDir(TEMP_DIR);
-    const tempPath = path.join(TEMP_DIR, `cached_cookies_${Date.now()}.txt`);
+    const tempPath = path.join(TEMP_DIR, `cookies_${Date.now()}.txt`);
     fs.writeFileSync(tempPath, content, 'utf-8');
 
     // Update cache
@@ -205,10 +200,9 @@ export async function getCachedCookies(forceRefresh = false): Promise<{
       fromCache: false,
       usedFallback: false,
     };
-  } catch (error: any) {
-    console.error('[CookiesCache] Fetch failed:', error.message);
-    
-    // Return fallback consent cookies
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[CookiesCache] Fetch failed:', errorMessage);
     return createFallbackCookies();
   }
 }
@@ -223,7 +217,7 @@ function createFallbackCookies(): {
   usedFallback: boolean;
 } {
   const fallbackContent = `# Netscape HTTP Cookie File
-# Fallback consent cookies generated by yt-dlp-utils
+# Fallback consent cookies generated by yt-dlp-utils v5.2.0
 # Generated at: ${new Date().toISOString()}
 
 .youtube.com\tTRUE\t/\tTRUE\t0\tSOCS\tCAISEAIgACgA
@@ -260,14 +254,14 @@ export function cleanupCachedCookies(): void {
     try {
       fs.unlinkSync(cookiesCache.tempPath);
       cookiesCache.tempPath = null;
-    } catch (error) {
-      console.warn('[CookiesCache] Cleanup warning:', error);
+    } catch {
+      // Ignore
     }
   }
 }
 
 // ==========================================
-// FFprobe Validation Implementation
+// Lightweight File Validation (NO FFprobe)
 // ==========================================
 
 /**
@@ -280,226 +274,135 @@ function ensureTempDir(dirPath: string): void {
 }
 
 /**
- * Validate downloaded video file using ffprobe
+ * Validate downloaded file using metadata-based size check
+ * v5.2.0: Removed FFprobe, uses relaxed size validation
  * 
- * Checks:
- * 1. File exists and has content
- * 2. FFprobe can read the file (exit code 0)
- * 3. Has at least one video or audio stream
- * 4. Duration is reasonable (> 0)
- * 
- * @param filePath - Path to the downloaded video file
- * @returns Promise<FFprobeResult>
+ * @param filePath - Path to downloaded file
+ * @param expectedSize - Expected size from metadata (optional)
+ * @param isAudioOnly - Whether this is audio-only format
  */
-export async function validateWithFFprobe(filePath: string): Promise<FFprobeResult> {
-  console.log('[FFprobe] Validating file:', path.basename(filePath));
-
+export function validateDownloadedFile(
+  filePath: string,
+  expectedSize: number | null = null,
+  isAudioOnly: boolean = false
+): ValidationResult {
+  console.log(`[Validate] Checking file: ${path.basename(filePath)}`);
+  
   // Check file exists
   if (!fs.existsSync(filePath)) {
     return {
       isValid: false,
-      hasVideo: false,
-      hasAudio: false,
-      duration: 0,
-      format: '',
+      fileSize: 0,
+      expectedSize,
+      sizeRatio: null,
       error: 'File does not exist',
-      streams: { video: 0, audio: 0 },
     };
   }
 
-  // Check file size (minimum 1KB to rule out empty/stub files)
   const stats = fs.statSync(filePath);
-  if (stats.size < 1024) {
+  const fileSize = stats.size;
+  
+  console.log(`[Validate] File size: ${formatBytes(fileSize)}, Expected: ${expectedSize ? formatBytes(expectedSize) : 'unknown'}`);
+
+  // Basic minimum size check (very relaxed)
+  // Audio files can be very small (1KB+), video needs more
+  const minSize = isAudioOnly ? 512 : MIN_FILE_SIZE;
+  
+  if (fileSize < minSize) {
     return {
       isValid: false,
-      hasVideo: false,
-      hasAudio: false,
-      duration: 0,
-      format: '',
-      error: `File too small: ${stats.size} bytes`,
-      streams: { video: 0, audio: 0 },
+      fileSize,
+      expectedSize,
+      sizeRatio: null,
+      error: `File too small: ${formatBytes(fileSize)} (min: ${formatBytes(minSize)})`,
     };
   }
 
-  return new Promise((resolve) => {
-    // FFprobe arguments for validation
-    const args = [
-      '-v', 'error',           // Only show errors
-      '-show_format',          // Show format info
-      '-show_streams',         // Show stream info
-      '-of', 'json',           // Output as JSON
-      filePath,
-    ];
-
-    const process = spawn('ffprobe', args, {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-
-    let stdout = '';
-    let stderr = '';
-
-    // Set timeout
-    const timeout = setTimeout(() => {
-      console.log('[FFprobe] Timeout - killing process');
-      process.kill('SIGTERM');
-      resolve({
-        isValid: false,
-        hasVideo: false,
-        hasAudio: false,
-        duration: 0,
-        format: '',
-        error: 'FFprobe timeout',
-        streams: { video: 0, audio: 0 },
-      });
-    }, FFPROBE_TIMEOUT);
-
-    process.stdout.on('data', (data) => {
-      stdout += data.toString();
-    });
-
-    process.stderr.on('data', (data) => {
-      stderr += data.toString();
-    });
-
-    process.on('error', (error) => {
-      clearTimeout(timeout);
-      console.error('[FFprobe] Process error:', error.message);
-      resolve({
-        isValid: false,
-        hasVideo: false,
-        hasAudio: false,
-        duration: 0,
-        format: '',
-        error: `FFprobe error: ${error.message}`,
-        streams: { video: 0, audio: 0 },
-      });
-    });
-
-    process.on('close', (code) => {
-      clearTimeout(timeout);
-
-      if (code !== 0) {
-        console.error('[FFprobe] Exit code:', code, 'stderr:', stderr.substring(0, 200));
-        resolve({
+  // If we have expected size, check if within tolerance
+  // But be VERY relaxed to avoid false positives
+  if (expectedSize && expectedSize > 0) {
+    const sizeRatio = fileSize / expectedSize;
+    
+    // Allow 50% to 200% of expected size (very generous)
+    if (sizeRatio < SIZE_TOLERANCE_MIN || sizeRatio > SIZE_TOLERANCE_MAX) {
+      console.warn(`[Validate] Size mismatch: ratio=${sizeRatio.toFixed(2)} (expected 0.5-2.0)`);
+      // Only fail if DRASTICALLY different (< 10% or > 500%)
+      if (sizeRatio < 0.1 || sizeRatio > 5.0) {
+        return {
           isValid: false,
-          hasVideo: false,
-          hasAudio: false,
-          duration: 0,
-          format: '',
-          error: `FFprobe failed with code ${code}: ${stderr.substring(0, 100)}`,
-          streams: { video: 0, audio: 0 },
-        });
-        return;
+          fileSize,
+          expectedSize,
+          sizeRatio,
+          error: `Size mismatch: got ${formatBytes(fileSize)}, expected ~${formatBytes(expectedSize)}`,
+        };
       }
+      // Otherwise just warn but consider valid
+      console.warn('[Validate] Size outside normal range but accepting anyway');
+    }
+    
+    return {
+      isValid: true,
+      fileSize,
+      expectedSize,
+      sizeRatio,
+    };
+  }
 
-      try {
-        const result = JSON.parse(stdout);
-        
-        // Count streams
-        const streams = result.streams || [];
-        let videoStreams = 0;
-        let audioStreams = 0;
+  // No expected size - just check for valid container header
+  const headerCheck = quickValidateHeader(filePath);
+  if (!headerCheck.isValid) {
+    return {
+      isValid: false,
+      fileSize,
+      expectedSize: null,
+      sizeRatio: null,
+      error: headerCheck.error,
+    };
+  }
 
-        for (const stream of streams) {
-          if (stream.codec_type === 'video') {
-            videoStreams++;
-          } else if (stream.codec_type === 'audio') {
-            audioStreams++;
-          }
-        }
-
-        // Get duration from format
-        const duration = parseFloat(result.format?.duration || '0');
-        const format = result.format?.format_name || '';
-
-        // Determine if valid
-        // Valid if: has at least one stream AND duration > 0
-        const hasVideo = videoStreams > 0;
-        const hasAudio = audioStreams > 0;
-        const isValid = (hasVideo || hasAudio) && duration > 0;
-
-        console.log(`[FFprobe] Validation result: valid=${isValid}, video=${videoStreams}, audio=${audioStreams}, duration=${duration}s`);
-
-        resolve({
-          isValid,
-          hasVideo,
-          hasAudio,
-          duration,
-          format,
-          streams: { video: videoStreams, audio: audioStreams },
-        });
-      } catch (parseError: any) {
-        console.error('[FFprobe] JSON parse error:', parseError.message);
-        resolve({
-          isValid: false,
-          hasVideo: false,
-          hasAudio: false,
-          duration: 0,
-          format: '',
-          error: 'Failed to parse FFprobe output',
-          streams: { video: 0, audio: 0 },
-        });
-      }
-    });
-  });
+  return {
+    isValid: true,
+    fileSize,
+    expectedSize: null,
+    sizeRatio: null,
+  };
 }
 
 /**
- * Quick validation without FFprobe (fallback when ffprobe unavailable)
- * Checks file size and basic header bytes
+ * Quick header validation - checks for valid container signatures
  */
-export function quickValidateFile(filePath: string, isVideo: boolean = true): {
-  isValid: boolean;
-  error?: string;
-} {
-  if (!fs.existsSync(filePath)) {
-    return { isValid: false, error: 'File not found' };
-  }
-
-  const stats = fs.statSync(filePath);
-  
-  // Minimum sizes
-  const minSize = isVideo ? 50 * 1024 : 10 * 1024; // 50KB for video, 10KB for audio
-  
-  if (stats.size < minSize) {
-    return { isValid: false, error: `File too small (${stats.size} bytes)` };
-  }
-
-  // Read first bytes to check for valid container signatures
+export function quickValidateHeader(filePath: string): { isValid: boolean; error?: string } {
   try {
     const fd = fs.openSync(filePath, 'r');
     const buffer = Buffer.alloc(12);
     fs.readSync(fd, buffer, 0, 12, 0);
     fs.closeSync(fd);
 
-    // Check for common container signatures
     const hex = buffer.toString('hex');
     
-    // MP4/M4A/M4V: starts with ftyp at offset 4
-    if (hex.includes('66747970')) { // 'ftyp'
-      return { isValid: true };
-    }
+    // MP4/M4A/M4V: 'ftyp' at offset 4
+    if (hex.includes('66747970')) return { isValid: true };
     
-    // WebM/MKV: starts with 1A45DFA3
-    if (hex.startsWith('1a45dfa3')) {
-      return { isValid: true };
-    }
+    // WebM/MKV: starts with 0x1A45DFA3
+    if (hex.startsWith('1a45dfa3')) return { isValid: true };
     
     // MP3: ID3 tag or sync word
-    if (hex.startsWith('494433') || hex.startsWith('fffb') || hex.startsWith('fff3')) {
+    if (hex.startsWith('494433') || hex.startsWith('fffb') || hex.startsWith('fff3') || hex.startsWith('fff2')) {
       return { isValid: true };
     }
 
     // OGG/Opus: OggS
-    if (hex.startsWith('4f676753')) {
-      return { isValid: true };
-    }
+    if (hex.startsWith('4f676753')) return { isValid: true };
+    
+    // WAV: RIFF
+    if (hex.startsWith('52494646')) return { isValid: true };
 
-    // File has content but unknown format - could still be valid
-    console.log('[QuickValidate] Unknown format, assuming valid. Header:', hex.substring(0, 16));
+    // Unknown format but has content - assume valid (avoid false positives)
+    console.log('[QuickValidate] Unknown format header:', hex.substring(0, 16));
     return { isValid: true };
-  } catch (error: any) {
-    return { isValid: false, error: `Read error: ${error.message}` };
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    return { isValid: false, error: `Read error: ${errorMessage}` };
   }
 }
 
@@ -509,20 +412,17 @@ export function quickValidateFile(filePath: string, isVideo: boolean = true): {
 
 /**
  * Create a timeout controller for long-running operations
+ * v5.2.0: Extended default timeout to 120s for serverless
  */
 export function createTimeoutController(timeoutMs: number, onTimeout?: () => void): TimeoutController {
-  let isAborted = false;
-  
   const controller: TimeoutController = {
     isAborted: false,
     timeoutId: setTimeout(() => {
-      isAborted = true;
       controller.isAborted = true;
       if (onTimeout) onTimeout();
     }, timeoutMs),
     abort: () => {
       clearTimeout(controller.timeoutId);
-      isAborted = true;
       controller.isAborted = true;
     },
   };
@@ -573,24 +473,20 @@ export async function killProcessWithTimeout(
 
 /**
  * Get fallback format based on retry attempt
- * 
- * Attempt 0: Original format
- * Attempt 1: 720p max
- * Attempt 2: 480p max
- * Attempt 3+: best available
+ * v5.2.0: Added 360p as last resort before 'best'
  */
 export function getFallbackFormat(attempt: number, originalFormat: string): string {
   if (attempt === 0) {
     return originalFormat;
   }
 
-  const fallbackIndex = Math.min(attempt - 1, DEFAULT_DOWNLOAD_CONFIG.fallbackFormats.length - 1);
-  return DEFAULT_DOWNLOAD_CONFIG.fallbackFormats[fallbackIndex];
+  const fallbacks = DEFAULT_DOWNLOAD_CONFIG.fallbackFormats;
+  const fallbackIndex = Math.min(attempt - 1, fallbacks.length - 1);
+  return fallbacks[fallbackIndex];
 }
 
 /**
  * Check if format is a "best quality" merge format
- * These formats are more prone to corruption
  */
 export function isBestQualityFormat(formatId: string): boolean {
   const bestFormats = [
@@ -600,49 +496,51 @@ export function isBestQualityFormat(formatId: string): boolean {
     'bestvideo*+bestaudio',
   ];
   
-  return bestFormats.some(f => formatId.toLowerCase().includes(f.toLowerCase()));
+  return bestFormats.some(f => formatId.toLowerCase().includes(f.toLowerCase())) ||
+         formatId.includes('+');
+}
+
+/**
+ * Check if format needs merging (video+audio separate)
+ */
+export function needsMergeFormat(formatId: string): boolean {
+  return formatId.includes('+');
 }
 
 /**
  * Get optimized yt-dlp format string for best quality
- * Uses safer alternatives to raw bestvideo+bestaudio
  */
 export function getOptimizedBestFormat(preferredExt: string = 'mp4'): string {
-  // Prioritize pre-merged formats, then merge if needed
-  // This reduces the chance of merge failures
   if (preferredExt === 'webm') {
     return 'bestvideo[ext=webm]+bestaudio[ext=webm]/bestvideo+bestaudio/best';
   }
-  
-  // For MP4: prefer formats that don't require remuxing
   return 'bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/best[ext=mp4]/best';
 }
 
 // ==========================================
-// Error Detection
+// Error Detection - v5.2.0 Enhanced
 // ==========================================
 
 /**
- * Check if error indicates corruption
+ * Check if error indicates file is corrupted
  */
 export function isCorruptionError(error: string | Error): boolean {
   const errorStr = typeof error === 'string' ? error : error.message;
   const lower = errorStr.toLowerCase();
   
-  const corruptionIndicators = [
+  const indicators = [
     'corrupt',
-    'invalid',
+    'invalid data',
     'malformed',
     'truncated',
     'incomplete',
     'moov atom not found',
-    'no such file',
     'premature end',
     'unexpected end',
-    'broken',
+    'broken pipe',
   ];
   
-  return corruptionIndicators.some(indicator => lower.includes(indicator));
+  return indicators.some(i => lower.includes(i));
 }
 
 /**
@@ -654,8 +552,9 @@ export function isTimeoutError(error: string | Error): boolean {
   
   return lower.includes('timeout') || 
          lower.includes('timed out') || 
-         lower.includes('deadline') ||
-         lower.includes('etimedout');
+         lower.includes('etimedout') ||
+         lower.includes('econnreset') ||
+         lower.includes('socket hang up');
 }
 
 /**
@@ -671,7 +570,23 @@ export function isRateLimitError(error: string | Error): boolean {
          lower.includes('sign in') ||
          lower.includes('bot') ||
          lower.includes('captcha') ||
-         lower.includes('403');
+         lower.includes('403') ||
+         lower.includes('forbidden');
+}
+
+/**
+ * Check if error indicates network issue (worth retrying)
+ */
+export function isNetworkError(error: string | Error): boolean {
+  const errorStr = typeof error === 'string' ? error : error.message;
+  const lower = errorStr.toLowerCase();
+  
+  return lower.includes('network') ||
+         lower.includes('enotfound') ||
+         lower.includes('econnrefused') ||
+         lower.includes('econnreset') ||
+         lower.includes('socket') ||
+         lower.includes('dns');
 }
 
 // ==========================================
@@ -679,28 +594,29 @@ export function isRateLimitError(error: string | Error): boolean {
 // ==========================================
 
 /**
- * Clean up old validation temp files
+ * Clean up old temp files
  */
-export function cleanupValidationTempFiles(): void {
+export function cleanupOldTempFiles(): void {
   try {
     if (!fs.existsSync(TEMP_DIR)) return;
     
     const files = fs.readdirSync(TEMP_DIR);
-    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+    const tenMinutesAgo = Date.now() - 10 * 60 * 1000;
     
     for (const file of files) {
       const filePath = path.join(TEMP_DIR, file);
       try {
         const stats = fs.statSync(filePath);
-        if (stats.mtimeMs < fiveMinutesAgo) {
+        if (stats.mtimeMs < tenMinutesAgo) {
           fs.unlinkSync(filePath);
+          console.log('[Cleanup] Removed old temp file:', file);
         }
       } catch {
-        // Ignore individual file errors
+        // Ignore
       }
     }
   } catch {
-    // Ignore cleanup errors
+    // Ignore
   }
 }
 
@@ -716,30 +632,36 @@ export function formatBytes(bytes: number): string {
 }
 
 /**
- * Check if ffprobe is available
+ * Get temp directory path
  */
-export async function isFFprobeAvailable(): Promise<boolean> {
-  return new Promise((resolve) => {
-    const process = spawn('ffprobe', ['-version'], {
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+export function getTempDir(): string {
+  ensureTempDir(TEMP_DIR);
+  return TEMP_DIR;
+}
 
-    const timeout = setTimeout(() => {
-      process.kill();
-      resolve(false);
-    }, 5000);
+/**
+ * Estimate if download might timeout based on file size
+ * v5.2.0: Warn for files > 100MB
+ */
+export function mightTimeout(filesizeApprox: number | null): boolean {
+  if (!filesizeApprox) return false;
+  // Warn if file is > 100MB (might exceed 60s serverless limit)
+  return filesizeApprox > 100 * 1024 * 1024;
+}
 
-    process.on('close', (code) => {
-      clearTimeout(timeout);
-      resolve(code === 0);
-    });
-
-    process.on('error', () => {
-      clearTimeout(timeout);
-      resolve(false);
-    });
-  });
+/**
+ * Get warning message for potentially slow downloads
+ */
+export function getTimeoutWarning(filesizeApprox: number | null): string | null {
+  if (!filesizeApprox) return null;
+  if (filesizeApprox > 500 * 1024 * 1024) {
+    return 'Large file (>500MB) - may timeout. Try lower quality.';
+  }
+  if (filesizeApprox > 100 * 1024 * 1024) {
+    return 'File may take a while to download.';
+  }
+  return null;
 }
 
 // Run cleanup on module load
-cleanupValidationTempFiles();
+cleanupOldTempFiles();

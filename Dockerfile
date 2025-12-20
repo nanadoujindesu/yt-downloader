@@ -1,34 +1,24 @@
 # ===========================================
-# Multi-stage Dockerfile for YouTube Downloader v5.1.0
+# Multi-stage Dockerfile for YouTube Downloader v5.2.0
 # ===========================================
 #
 # 🚀 PHALA CLOUD & VPS DEPLOYMENT READY
 #
-# v5.1.0 CORRUPTION FIX UPDATE:
-# - FFprobe validation for download integrity
-# - Auto-fallback to safer formats if corruption detected
-# - Cookies caching (30s TTL) for faster requests
-# - Enhanced timeout handling
-# - More granular progress updates
+# v5.2.0 TIMEOUT FIX UPDATE:
+# - REMOVED FFprobe dependency (causes false positives)
+# - Relaxed validation using metadata-based size check
+# - Extended timeouts for serverless (120s total)
+# - Reduced concurrent fragments (2) for stability
+# - Cookies cache extended to 60s
+# - Better error handling to avoid 500/504
 #
 # v5.0 CHANGES (retained):
-# - Auto-fetch cookies from external URL (no manual management)
-# - Removed cookies importer/manager features
-# - Real-time cookie sync on-demand
+# - Auto-fetch cookies from external URL
 # - Smart fallback to consent cookies
+# - better-sqlite3 native module support
 #
-# CRITICAL FIX: better-sqlite3 native module support
-#
-# This Dockerfile builds a production image that:
-# - Does NOT require .env files
-# - Accepts all config via environment variables
-# - Uses docker-compose.yml for configuration
-# - Supports server-side proxy downloads
-# - Properly includes better-sqlite3 native bindings
-# - Auto-fetches cookies from external URL
-#
-# Build: docker build -t yourusername/youtube-downloader:latest .
-# Push:  docker push yourusername/youtube-downloader:latest
+# Build: docker build -t yourusername/youtube-downloader:5.2.0 .
+# Push:  docker push yourusername/youtube-downloader:5.2.0
 # Run:   docker-compose up -d
 #
 # ===========================================
@@ -71,7 +61,7 @@ FROM node:20-alpine AS runner
 WORKDIR /app
 
 # Install runtime dependencies for yt-dlp, SQLite, and native modules
-# v5.1.0: ffmpeg includes ffprobe for download validation
+# v5.2.0: ffmpeg kept for merging, ffprobe not required for validation
 RUN apk add --no-cache \
     curl \
     python3 \
@@ -80,9 +70,7 @@ RUN apk add --no-cache \
     sqlite \
     # Required for better-sqlite3 runtime
     libstdc++ \
-    && rm -rf /var/cache/apk/* \
-    # Verify ffprobe is available for corruption detection
-    && ffprobe -version || echo "Warning: ffprobe not found"
+    && rm -rf /var/cache/apk/*
 
 # Environment variables
 ENV NODE_ENV=production
@@ -132,8 +120,8 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
 
 # Labels
 LABEL org.opencontainers.image.title="YouTube Downloader"
-LABEL org.opencontainers.image.description="Production-ready YouTube video downloader with yt-dlp, auto-cookies, and corruption fix"
-LABEL org.opencontainers.image.version="5.1.0"
+LABEL org.opencontainers.image.description="Production-ready YouTube downloader with timeout fix, auto-cookies, and fallback formats"
+LABEL org.opencontainers.image.version="5.2.0"
 
 # Start the application
 CMD ["node", "server.js"]

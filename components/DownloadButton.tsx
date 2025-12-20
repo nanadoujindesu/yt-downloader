@@ -13,24 +13,24 @@ interface DownloadButtonProps {
 }
 
 interface DownloadProgress {
-  status: 'idle' | 'preparing' | 'downloading' | 'merging' | 'validating' | 'processing' | 'complete' | 'error' | 'retrying';
+  status: 'idle' | 'preparing' | 'downloading' | 'merging' | 'verifying' | 'processing' | 'complete' | 'error' | 'retrying' | 'timeout';
   progress: number;
   bytesDownloaded: number;
   totalBytes: number;
   message?: string;
   error?: string;
-  isCorruption?: boolean;
+  isTimeout?: boolean;
   suggestion?: string;
 }
 
 /**
  * DownloadButton Component
  * 
- * v4.2.0 Features:
+ * v5.2.0 Features:
  * - Real-time progress via Server-Sent Events (SSE)
- * - Shows detailed status during "Preparing" phase
- * - Handles video+audio merging status
- * - Better error handling with retry suggestions
+ * - Extended timeout handling (120s for serverless)
+ * - Better error messages for timeout/network issues
+ * - Graceful fallback quality suggestions
  */
 export default function DownloadButton({
   videoUrl,
@@ -88,13 +88,13 @@ export default function DownloadButton({
             progress: 100,
             message: 'File ready, starting download...',
           }));
-        } else if (data.phase === 'validating') {
-          // v5.1.0: New validation phase
+        } else if (data.phase === 'verifying') {
+          // v5.2.0: Lightweight verification phase
           setDownloadProgress(prev => ({
             ...prev,
-            status: 'validating',
-            progress: data.progress || 92,
-            message: data.message || 'Validating download...',
+            status: 'verifying',
+            progress: data.progress || 95,
+            message: data.message || 'Verifying download...',
           }));
         } else if (data.phase === 'merging') {
           setDownloadProgress(prev => ({
@@ -118,15 +118,16 @@ export default function DownloadButton({
             message: data.message || 'Preparing download...',
           }));
         } else if (data.phase === 'timeout') {
-          // v5.1.0: Handle timeout with retrying state
+          // v5.2.0: Handle timeout with retrying state
           setDownloadProgress(prev => ({
             ...prev,
-            status: 'retrying',
+            status: 'timeout',
             progress: data.progress || 0,
-            message: data.message || 'Connection timeout - retrying...',
+            message: data.message || 'Timeout - retrying with lower quality...',
+            isTimeout: true,
           }));
         }
-      } catch (e) {
+      } catch {
         // Ignore parse errors (heartbeats, etc.)
       }
     };
@@ -316,24 +317,20 @@ export default function DownloadButton({
       // Provide helpful error messages
       const errorMessage = error.message || 'Download failed';
       let toastMessage = errorMessage;
-      let isCorruption = false;
+      let isTimeout = false;
       let suggestion = '';
       
-      // v5.1.0: Enhanced error detection and messaging
-      if (errorMessage.includes('corrupted') || errorMessage.includes('Corruption') || errorMessage.includes('corrupt')) {
-        toastMessage = 'Video file was corrupted. Trying a lower quality format is recommended.';
-        isCorruption = true;
-        suggestion = 'Try selecting a lower quality format (720p or below)';
+      // v5.2.0: Enhanced error detection and messaging
+      if (errorMessage.includes('timed out') || errorMessage.includes('timeout') || errorMessage.includes('Timeout')) {
+        toastMessage = 'Download timed out. Try a lower quality format.';
+        isTimeout = true;
+        suggestion = 'Try selecting 720p or below for faster downloads';
+      } else if (errorMessage.includes('corrupted') || errorMessage.includes('Corruption') || errorMessage.includes('corrupt')) {
+        toastMessage = 'Video file was corrupted. Try a different format.';
+        suggestion = 'Try selecting a different format';
       } else if (errorMessage.includes('bot') || errorMessage.includes('Bot') || errorMessage.includes('blocked')) {
         toastMessage = 'YouTube blocked the request. Try again in a few minutes.';
         suggestion = 'Try again in a few minutes';
-      } else if (errorMessage.includes('timed out') || errorMessage.includes('timeout') || errorMessage.includes('Timeout')) {
-        toastMessage = 'Connection timed out. Check your network or try a lower quality.';
-        suggestion = 'Check your network connection or try a lower quality';
-      } else if (errorMessage.includes('validation') || errorMessage.includes('FFprobe')) {
-        toastMessage = 'Video file validation failed. Try a different format.';
-        isCorruption = true;
-        suggestion = 'Try selecting a different format';
       } else if (errorMessage.includes('Fragment')) {
         toastMessage = 'Download interrupted. Please try again.';
         suggestion = 'Click Download to retry';
@@ -346,14 +343,14 @@ export default function DownloadButton({
         totalBytes: 0,
         error: errorMessage,
         message: errorMessage,
-        isCorruption,
+        isTimeout,
         suggestion,
       });
 
       // Show toast with specific message
       toast.error(toastMessage, { 
         duration: 6000,
-        icon: isCorruption ? '⚠️' : '❌',
+        icon: isTimeout ? '⏱️' : '❌',
       });
       
       // Show suggestion toast if available
@@ -389,7 +386,7 @@ export default function DownloadButton({
     }
   };
 
-  const isDownloading = ['preparing', 'downloading', 'merging', 'validating', 'processing', 'retrying'].includes(downloadProgress.status);
+  const isDownloading = ['preparing', 'downloading', 'merging', 'verifying', 'processing', 'retrying', 'timeout'].includes(downloadProgress.status);
   const disabled = !format || isDownloading;
 
   const getStatusText = () => {
@@ -403,12 +400,14 @@ export default function DownloadButton({
         return 'Preparing download...';
       case 'downloading':
         return `Downloading: ${downloadProgress.progress}%`;
-      case 'validating':
-        return 'Validating download...';
+      case 'verifying':
+        return 'Verifying download...';
       case 'merging':
         return 'Merging video and audio...';
       case 'retrying':
         return downloadProgress.message || 'Retrying download...';
+      case 'timeout':
+        return 'Timeout - retrying with lower quality...';
       case 'processing':
         return downloadProgress.totalBytes > 0
           ? `Receiving: ${formatFileSize(downloadProgress.bytesDownloaded)} / ${formatFileSize(downloadProgress.totalBytes)}`
@@ -429,9 +428,10 @@ export default function DownloadButton({
         return 'bg-warning';
       case 'merging':
         return 'bg-secondary';
-      case 'validating':
+      case 'verifying':
         return 'bg-info';
       case 'retrying':
+      case 'timeout':
         return 'bg-warning animate-pulse';
       case 'error':
         return 'bg-error';
@@ -565,7 +565,7 @@ export default function DownloadButton({
                 
                 {/* Phase indicator badges */}
                 <div className="flex gap-2 flex-wrap">
-                  <span className={`badge badge-xs ${downloadProgress.status === 'preparing' || downloadProgress.status === 'retrying' ? 'badge-warning' : 'badge-ghost'}`}>
+                  <span className={`badge badge-xs ${downloadProgress.status === 'preparing' || downloadProgress.status === 'retrying' || downloadProgress.status === 'timeout' ? 'badge-warning' : 'badge-ghost'}`}>
                     Prepare
                   </span>
                   <span className={`badge badge-xs ${downloadProgress.status === 'downloading' ? 'badge-primary' : 'badge-ghost'}`}>
@@ -574,8 +574,8 @@ export default function DownloadButton({
                   <span className={`badge badge-xs ${downloadProgress.status === 'merging' ? 'badge-secondary' : 'badge-ghost'}`}>
                     Merge
                   </span>
-                  <span className={`badge badge-xs ${downloadProgress.status === 'validating' ? 'badge-info' : 'badge-ghost'}`}>
-                    Validate
+                  <span className={`badge badge-xs ${downloadProgress.status === 'verifying' ? 'badge-info' : 'badge-ghost'}`}>
+                    Verify
                   </span>
                   <span className={`badge badge-xs ${downloadProgress.status === 'processing' ? 'badge-info' : 'badge-ghost'}`}>
                     Transfer
@@ -591,12 +591,12 @@ export default function DownloadButton({
           {isDownloading 
             ? downloadProgress.status === 'merging'
               ? 'Merging video and audio tracks. This ensures your video plays correctly.'
-              : downloadProgress.status === 'validating'
-              ? 'Validating download integrity to ensure the file is not corrupted.'
-              : downloadProgress.status === 'retrying'
-              ? 'Retrying with optimized settings for better reliability.'
-              : 'Download is streamed through our server. Large files may take time.'
-            : 'Downloads are validated for integrity. Best Quality formats auto-fallback if issues occur.'
+              : downloadProgress.status === 'verifying'
+              ? 'Quick verification to ensure file is playable.'
+              : downloadProgress.status === 'retrying' || downloadProgress.status === 'timeout'
+              ? 'Retrying with a lower quality for better reliability.'
+              : 'Download is streamed through our server. Large files may take longer.'
+            : 'Downloads are verified for playability. Large files may timeout - try lower quality if needed.'
           }
         </p>
       </div>
