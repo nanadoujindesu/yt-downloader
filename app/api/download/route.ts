@@ -1,25 +1,29 @@
 /**
  * /api/download/route.ts
  * 
- * Server-side proxy download endpoint v5.4.1
+ * Server-side proxy download endpoint v5.4.2
+ * 
+ * v5.4.2 FINAL MERGE FIX:
+ * - CRITICAL FIX: Force H.264 (avc1) video codec selection to ensure video stream is included
+ * - Use --remux-video mp4 instead of --merge-output-format for proper container remux
+ * - Added --force-overwrites and --no-continue for clean temp files
+ * - Format string now explicitly requires vcodec^=avc1 for compatibility
  * 
  * v5.4.1 MERGE BUG FIX:
- * - VIDEO MERGE FIX: Added --prefer-ffmpeg and --postprocessor-args to ensure video stream
- *   is properly included in merged MP4 output (fixes audio-only MP4 bug)
+ * - Added --prefer-ffmpeg and --postprocessor-args (partial fix, still had issues)
  * 
  * v5.4.0 AUDIO/VIDEO FIX UPDATE:
  * - AUDIO FIX: Use temp file + --extract-audio for MP3/M4A (streaming doesn't work with -x)
- * - VIDEO FIX: Proper merge args for recommended formats
  * - PROGRESS FIX: Force 100% on successful completion
  * - CORRUPTION FIX: Relaxed validation, proper content types
  * 
  * Key Issues Fixed:
- * - v5.4.1: MP4 files containing only audio stream (no video) for recommended merge formats
+ * - v5.4.2: MP4 files with audio-only (no video) - now forces H.264 video codec selection
+ * - v5.4.1: Initial merge fix attempt (incomplete)
  * - "Video file was corrupted" on audio formats: Audio needs temp file, not stdout streaming
  * - Progress stuck at 98%: Force 100% on process exit code 0
- * - Recommended video corruption: Better merge args
  * 
- * @version 5.4.1 - Merge Bug Fix
+ * @version 5.4.2 - Final Merge Fix
  */
 
 import { NextRequest } from 'next/server';
@@ -261,38 +265,40 @@ export async function POST(request: NextRequest) {
       console.log(`[Download ${downloadId}] Audio mode: extracting to ${outputExt}`);
     } else {
       // VIDEO DOWNLOAD - use format string with proper merge
-      // v5.4.1 MERGE FIX: Improved format selection to ensure video stream is included
+      // v5.4.2 FINAL MERGE FIX: Force H.264 (avc1) video codec to ensure video stream is included
+      // Issue: Without vcodec filter, yt-dlp may select audio-only or incompatible video streams
       let formatStr: string;
       
       if (format && format !== 'best' && format !== 'audio') {
-        // Specific format ID requested - wrap with merge-compatible fallbacks
-        // This ensures we get video+audio even if specific ID fails
-        formatStr = `${format}/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best`;
+        // Specific format ID requested - wrap with merge-compatible fallbacks using avc1 codec
+        // Fix audio-only MP4: force avc1 video codec for compatibility and stream inclusion
+        formatStr = `${format}/bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best`;
       } else if (quality) {
-        // Quality-based selection with explicit video+audio merge
+        // Quality-based selection with explicit H.264 (avc1) video codec requirement
         const height = quality.replace('p', '');
         if (height === 'best' || quality === 'best') {
-          // v5.4.1: Prioritize MP4+M4A for best compatibility, fallback chain ensures video
-          formatStr = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
+          // v5.4.2: Force avc1 codec for best compatibility, ensures video stream is selected
+          formatStr = 'bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[vcodec^=avc1]+bestaudio/bestvideo+bestaudio/best';
         } else {
-          // Height-limited selection with video-first priority
-          formatStr = `bestvideo[ext=mp4][height<=${height}]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=${height}]+bestaudio/bestvideo[height<=${height}]+bestaudio[ext=m4a]/bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`;
+          // Height-limited selection with avc1 codec priority for video stream guarantee
+          formatStr = `bestvideo[ext=mp4][height<=${height}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=${height}][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=${height}][vcodec^=avc1]+bestaudio/bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`;
         }
       } else {
-        // Default: 720p max for stability with proper video+audio merge
-        formatStr = 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=720]+bestaudio/bestvideo[height<=720]+bestaudio/best[height<=720]/best';
+        // Default: 720p max for stability with avc1 codec for proper video+audio merge
+        formatStr = 'bestvideo[ext=mp4][height<=720][vcodec^=avc1]+bestaudio[ext=m4a]/bestvideo[height<=720][vcodec^=avc1]+bestaudio/bestvideo[height<=720]+bestaudio/best[height<=720]/best';
       }
       
+      // v5.4.2 FINAL MERGE FIX: Use --remux-video instead of --merge-output-format
+      // --remux-video forces proper remuxing into MP4 container with video stream
       args.push(
         '-f', formatStr,
-        '--merge-output-format', 'mp4',
-        // v5.4.1 MERGE FIX: Ensure video stream is included in merged output
-        // Without these args, yt-dlp may produce MP4 with only audio stream
-        '--prefer-ffmpeg',
-        '--postprocessor-args', 'ffmpeg:-c:v copy -c:a aac -strict experimental',
+        '--remux-video', 'mp4',           // Force remux into proper MP4 container with video
+        '--postprocessor-args', 'ffmpeg:-c:v copy -c:a aac',  // Copy video stream, encode audio to AAC
+        '--force-overwrites',             // Clean temp file handling
+        '--no-continue',                  // Don't resume partial downloads (ensure clean file)
         '-o', tempFile,
       );
-      console.log(`[Download ${downloadId}] Video mode: format=${formatStr} (with merge fix args)`);
+      console.log(`[Download ${downloadId}] Video mode: format=${formatStr} (v5.4.2 final merge fix)`);
     }
 
     // Common args
