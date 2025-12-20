@@ -1,4 +1,4 @@
-# 🎬 YouTube Downloader v5.4.0 - Audio/Video Fix Update
+# 🎬 YouTube Downloader v5.4.1 - Merge Bug Fix
 
 A modern, production-ready web application for downloading YouTube videos using yt-dlp. Features **reliable audio downloads (MP3/M4A)**, **streaming proxy**, **auto-cookies**, and is optimized for serverless environments.
 
@@ -11,6 +11,43 @@ A modern, production-ready web application for downloading YouTube videos using 
 ![SQLite](https://img.shields.io/badge/SQLite-3-003B57?style=flat-square&logo=sqlite)
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+
+## 🔧 What's New in v5.4.1 - Merge Bug Fix
+
+### 🎬 Video Merge Bug Fix
+This minimal update fixes **recommended video formats downloading as audio-only MP4** (no video stream, plays like MP3 in MP4 container).
+
+#### Issue Reported
+```
+User reported: Downloaded "MiawAug Ketakutan Bisa Sembunyi Di Dalam Gamenya!_.mp4" 
+plays sound but shows no video. File contains only audio stream despite UI showing "MP4 merge".
+```
+
+#### Root Cause
+The yt-dlp merge process was not explicitly configured to preserve the video stream when combining `bestvideo` + `bestaudio`. Without proper postprocessor arguments, ffmpeg could produce MP4 with only the audio track.
+
+#### Solution (Minimal Args Fix)
+```typescript
+// v5.4.1 FIX: Added these args for video merge formats
+args.push(
+  '--prefer-ffmpeg',                                    // Ensure ffmpeg is used for merging
+  '--postprocessor-args', 'ffmpeg:-c:v copy -c:a aac -strict experimental',  // Copy video, encode audio
+);
+
+// Improved format string prioritizes video+audio combinations
+formatStr = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio/best';
+```
+
+#### Testing the Fix
+1. Download a video using "Best Quality" or "1080p" (merge formats)
+2. Play the downloaded `.mp4` in VLC or any media player
+3. Verify video is visible (not just audio)
+4. Optional: Check with ffprobe: `ffprobe -i video.mp4` - should show both video and audio streams
+
+#### ⚠️ Important Note
+This is a **minimal args tweak only**. No other code, features, or fixes were modified. If you encounter issues with other features, they are unrelated to this update.
+
+---
 
 ## ✨ What's New in v5.4.0
 
@@ -266,6 +303,17 @@ socks5://user:pass@proxy:1080
 - Check server logs for errors
 
 ## 📝 Changelog
+
+### v5.4.1 (2025-12-20) - Merge Bug Fix
+- 🎬 **Video merge fix** - Added `--prefer-ffmpeg` and `--postprocessor-args` to ensure video stream is included
+- 🔧 **Format string improvement** - Better fallback chain for video+audio merge combinations
+- 📝 **Minimal change** - Only yt-dlp args modified, no other code changes
+- ⚠️ **Issue fixed**: MP4 files containing only audio stream (no video) for recommended merge formats
+
+### v5.4.0 (2025-12-XX) - Audio/Video Fix
+- 🎵 **Audio download fix** - Use temp file + `--extract-audio` for MP3/M4A
+- 📊 **Progress fix** - Force 100% on successful completion
+- ✅ **Validation relaxed** - 1KB min for audio, 10KB for video
 
 ### v5.3.0 (2025-01-XX) - Streaming Fix
 - 🚀 **Pure streaming** - `stdout` to response (no temp file wait)

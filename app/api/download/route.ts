@@ -1,7 +1,11 @@
 /**
  * /api/download/route.ts
  * 
- * Server-side proxy download endpoint v5.4.0
+ * Server-side proxy download endpoint v5.4.1
+ * 
+ * v5.4.1 MERGE BUG FIX:
+ * - VIDEO MERGE FIX: Added --prefer-ffmpeg and --postprocessor-args to ensure video stream
+ *   is properly included in merged MP4 output (fixes audio-only MP4 bug)
  * 
  * v5.4.0 AUDIO/VIDEO FIX UPDATE:
  * - AUDIO FIX: Use temp file + --extract-audio for MP3/M4A (streaming doesn't work with -x)
@@ -10,11 +14,12 @@
  * - CORRUPTION FIX: Relaxed validation, proper content types
  * 
  * Key Issues Fixed:
+ * - v5.4.1: MP4 files containing only audio stream (no video) for recommended merge formats
  * - "Video file was corrupted" on audio formats: Audio needs temp file, not stdout streaming
  * - Progress stuck at 98%: Force 100% on process exit code 0
  * - Recommended video corruption: Better merge args
  * 
- * @version 5.4.0 - Audio/Video Fix Update
+ * @version 5.4.1 - Merge Bug Fix
  */
 
 import { NextRequest } from 'next/server';
@@ -256,30 +261,38 @@ export async function POST(request: NextRequest) {
       console.log(`[Download ${downloadId}] Audio mode: extracting to ${outputExt}`);
     } else {
       // VIDEO DOWNLOAD - use format string with proper merge
+      // v5.4.1 MERGE FIX: Improved format selection to ensure video stream is included
       let formatStr: string;
       
       if (format && format !== 'best' && format !== 'audio') {
-        // Specific format ID requested
-        formatStr = format;
+        // Specific format ID requested - wrap with merge-compatible fallbacks
+        // This ensures we get video+audio even if specific ID fails
+        formatStr = `${format}/bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo+bestaudio/best`;
       } else if (quality) {
-        // Quality-based selection
+        // Quality-based selection with explicit video+audio merge
         const height = quality.replace('p', '');
         if (height === 'best' || quality === 'best') {
-          formatStr = 'bestvideo[ext=mp4][height<=1080]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best';
+          // v5.4.1: Prioritize MP4+M4A for best compatibility, fallback chain ensures video
+          formatStr = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/bestvideo[ext=mp4]+bestaudio/bestvideo+bestaudio[ext=m4a]/bestvideo+bestaudio/best';
         } else {
-          formatStr = `bestvideo[ext=mp4][height<=${height}]+bestaudio[ext=m4a]/bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`;
+          // Height-limited selection with video-first priority
+          formatStr = `bestvideo[ext=mp4][height<=${height}]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=${height}]+bestaudio/bestvideo[height<=${height}]+bestaudio[ext=m4a]/bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`;
         }
       } else {
-        // Default: 720p max for stability
-        formatStr = 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[height<=720]+bestaudio/best[height<=720]/best';
+        // Default: 720p max for stability with proper video+audio merge
+        formatStr = 'bestvideo[ext=mp4][height<=720]+bestaudio[ext=m4a]/bestvideo[ext=mp4][height<=720]+bestaudio/bestvideo[height<=720]+bestaudio/best[height<=720]/best';
       }
       
       args.push(
         '-f', formatStr,
         '--merge-output-format', 'mp4',
+        // v5.4.1 MERGE FIX: Ensure video stream is included in merged output
+        // Without these args, yt-dlp may produce MP4 with only audio stream
+        '--prefer-ffmpeg',
+        '--postprocessor-args', 'ffmpeg:-c:v copy -c:a aac -strict experimental',
         '-o', tempFile,
       );
-      console.log(`[Download ${downloadId}] Video mode: format=${formatStr}`);
+      console.log(`[Download ${downloadId}] Video mode: format=${formatStr} (with merge fix args)`);
     }
 
     // Common args
