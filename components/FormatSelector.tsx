@@ -128,34 +128,18 @@ export default function FormatSelector({ formats, onSelect, selectedFormat }: Fo
           </div>
         )}
 
-        {/* Recommended video formats - with warning */}
-        {recommendedVideoFormats.length > 0 && filter !== 'audio' && (
-          <div className="mb-6">
-            <div className="flex items-center gap-2 mb-3">
-              <h4 className="text-sm font-semibold text-warning uppercase tracking-wide flex items-center gap-1">
-                <FiAlertTriangle className="w-4 h-4" />
-                Best Quality Video
-              </h4>
-              <div className="tooltip tooltip-right" data-tip="These merge video+audio, which may be slower and can timeout on serverless. Use Audio formats for reliability.">
-                <FiInfo className="w-3.5 h-3.5 text-base-content/40 cursor-help" />
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <AnimatePresence mode="popLayout">
-                {recommendedVideoFormats.map((format, index) => (
-                  <FormatCard
-                    key={format.formatId}
-                    format={format}
-                    isSelected={selectedFormat?.formatId === format.formatId}
-                    onClick={() => onSelect(format)}
-                    index={index}
-                    isReliable={false}
-                  />
-                ))}
-              </AnimatePresence>
-            </div>
-          </div>
-        )}
+        {/* 
+         * REMOVED: Best Quality Video (Recommended Merge Formats) Section
+         * 
+         * Final removal of merge UI section as per user instruction—unfixable bug causing audio-only MP4.
+         * The recommended video formats (Best Quality, 1080p, 720p, 480p with video+audio merge)
+         * persistently failed despite multiple fix attempts, resulting in corrupted downloads or
+         * audio-only MP4 files. This section has been permanently removed to preserve app stability.
+         * 
+         * Users should use:
+         * - Audio Formats (MP3/M4A) for music - most reliable
+         * - Individual Formats for video - downloads single stream as-is
+         */}
 
         {/* Individual video formats */}
         {individualVideoFormats.length > 0 && filter !== 'audio' && (

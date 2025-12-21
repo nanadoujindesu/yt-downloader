@@ -1,4 +1,4 @@
-# 🎬 YouTube Downloader v5.4.2 - Final Merge Fix
+# 🎬 YouTube Downloader v5.5.0 - Merge Section Removed
 
 A modern, production-ready web application for downloading YouTube videos using yt-dlp. Features **reliable audio downloads (MP3/M4A)**, **streaming proxy**, **auto-cookies**, and is optimized for serverless environments.
 
@@ -12,7 +12,34 @@ A modern, production-ready web application for downloading YouTube videos using 
 ![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat-square&logo=docker)
 ![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
 
-## 🔧 What's New in v5.4.2 - Final Merge Fix
+## � v5.5.0 - Merge Section Removal
+
+### Best Quality Video Section Removed
+
+The **"Best Quality Video"** recommended merge section (Best Quality, 1080p Full HD, 720p HD, 480p SD with video+audio merge) has been **permanently removed** from the UI.
+
+#### Why Removed?
+- Despite multiple fix attempts (v5.4.0, v5.4.1, v5.4.2), merge formats persistently failed
+- Downloads resulted in **audio-only MP4 files** (black screen with sound) or corrupted files
+- The bug was unfixable without risking other stable parts of the application
+- Removal was the safest option to preserve app stability
+
+#### What Still Works?
+| Feature | Status | Recommended Use |
+|---------|--------|----------------|
+| **Audio Formats (MP3/M4A)** | ✅ Working | Music downloads - most reliable |
+| **Individual Video Formats** | ✅ Working | Video downloads - single stream |
+| **Proxy Downloads** | ✅ Working | All formats |
+| **Auto Cookies** | ✅ Working | Age-restricted content |
+| **SSE Progress** | ✅ Working | Real-time progress |
+| **Admin Panel** | ✅ Working | Full functionality |
+
+#### For Video Downloads
+Use **Individual Formats** section to download video streams. These download the video as-is without merging, which is more reliable on serverless environments with timeout limits.
+
+---
+
+## 🔧 What's New in v5.4.2 - Final Merge Fix (Superseded by v5.5.0)
 
 ### 🎬 Critical Video Merge Fix (FINAL)
 This update **definitively fixes** recommended video formats downloading as **audio-only MP4** (no video stream).
