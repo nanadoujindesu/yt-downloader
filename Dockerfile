@@ -113,7 +113,6 @@ RUN /app/bin/yt-dlp --version
 USER nextjs
 
 EXPOSE 3000
-VOLUME ["/data"]
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=10s --retries=3 \
